@@ -114,6 +114,7 @@ exports.loginUser = (req, res) => {
         (err, token) => {
           if (err) return res.status(500).json({ err });
 
+          //save the token temporarily
           foundUser.token = token;
           //set the found user' isLoggedIn to true
           foundUser.isLoggedIn = true;
@@ -137,31 +138,154 @@ exports.logOutUser = (req, res) => {
   const splitedString = authHeader.split(" ");
   const token = splitedString[1];
 
-  // decrypt the token
-  jwt.verify(token, SECRET, (err, decodedUserDetails) => {
+  //decode the jwt
+  let decodedUserDetails = jwt.decode(token);
+
+  //extract username or email
+  let userEmail = decodedUserDetails.email;
+
+  //use the email to locate the user
+  UserModel.findOne({ email: userEmail }, (err, foundUser) => {
     if (err) return res.status(500).json({ err });
-    //extract username or email
-    let userEmail = decodedUserDetails.email;
+    //check if the user has already been logged out
+    if (!foundUser.isLoggedIn)
+      return res
+        .status(401)
+        .json({ message: "User has already been logged out" });
 
-    //use the email to locate the user
-    UserModel.findOne({ email: userEmail }, (err, foundUser) => {
+    //set the isLogggedIn record to false
+    foundUser.isLoggedIn = false;
+    foundUser.token = "";
+    foundUser.save((err, savedUser) => {
       if (err) return res.status(500).json({ err });
-      //check if the user has already been logged out
-      if (!foundUser.isLoggedIn)
-        return res
-          .status(401)
-          .json({ message: "User has already been logged out" });
+      return res.status(200).json({
+        message: "User logged out",
+        isLoggedIn: foundUser.isLoggedIn,
+      });
+    });
+  });
 
-      //set the isLogggedIn record to false
-      foundUser.isLoggedIn = false;
-      foundUser.token = "";
-      foundUser.save((err, savedUser) => {
+  // jwt.verify(token, SECRET, (err, decodedUserDetails) => {
+  //   if (err) return res.status(500).json({ err });
+
+  // });
+};
+
+exports.sendOtp = (req, res) => {
+  //generate otp using the user's email
+
+  //extract email from user's
+  let email = req.body.email;
+  //check if user with email exists
+  UserModel.findOne({ email: email, role: "manager" }, (err, foundUser) => {
+    if (err) return res.status(500).json({ err });
+    if (!foundUser)
+      return res
+        .status(400)
+        .json({ message: "User with this email does not exist" });
+
+    //generate otp
+    const otp = generateOtp();
+    //save otp to database
+    foundUser.otp = otp;
+    foundUser.otpIsValid = true;
+    //otp expires 3 mins later
+    foundUser.otpExpiresBy = new Date().getTime() + 180 * 1000;
+    foundUser.save((err, savedUser) => {
+      if (err) return res.status(500).json({ err });
+
+      //generate otp message and send
+      let mailHtml = sendOtpToClient(otp, email);
+
+      res.send(mailHtml);
+    });
+  });
+
+  // user send email in a get request
+  //send the otp as a respose to the user's get request
+};
+
+exports.verifyOtpandChangePassword = (req, res) => {
+  //extract email otp and new password
+  let sentOtp = req.body.otp;
+  let newPassword = req.body.password;
+  let email = req.body.email;
+
+  //find the user having this email
+  UserModel.findOne({ email: email }, (err, foundUser) => {
+    if (err) return res.status(500).json({ err });
+
+    //get and compare the otp stored in the db
+    let otpMatches = sentOtp === foundUser.otp;
+
+    // if the otp does not match what is in the database
+    if (!otpMatches) return res.status(400).json({ message: "incorrect otp" });
+
+    //check if the otp valid is still valid
+    //check the if the currrent time is less than the otp expiry time
+    let otpIsValid = new Date().getTime() < foundUser.otpExpiresBy;
+
+    if (!otpIsValid) return res.status(400).json({ message: "otp exipired" });
+
+    //hash the user's password
+
+    bcrpyt.genSalt(SALT_ROUNDS, (err, salt) => {
+      if (err) return res.status(500).json(err);
+
+      //hash the user's password
+      bcrpyt.hash(newPassword, salt, (err, hash) => {
         if (err) return res.status(500).json({ err });
-        return res.status(200).json({
-          message: "User logged out",
-          isLoggedIn: foundUser.isLoggedIn,
+
+        foundUser.password = hash;
+        foundUser.otp = "";
+        foundUser.otpExpiresBy = "";
+
+        //and save to database
+        foundUser.save((err, savedUser) => {
+          if (err) return res.status(500).json({ err });
+
+          //create token for the client
+          jwt.sign(
+            {
+              id: foundUser._id,
+              username: foundUser.username,
+              email: foundUser.email,
+            },
+            SECRET,
+            { expiresIn: expiry },
+            (err, token) => {
+              if (err) return res.status(500).json({ err });
+
+              //send token to the client
+              return res.status(200).json({
+                message: "Account recovery sucessful",
+                token,
+              });
+            }
+          );
         });
       });
     });
   });
+
+  //use replace the password with the new one
+};
+
+const generateOtp = () => {
+  return otpGenerator.generate(OTP_LENGTH, OTP_CONFIG);
+};
+
+const sendOtpToClient = (otp, email) => {
+  //call the mail service
+  let mailmessagHtml = `<div
+class="container"
+style="max-width: 90%; margin: auto; padding-top: 20px"
+>
+<h2>Welcome to the club.</h2>
+<h4>You are officially In ✔</h4>
+<p style="margin-bottom: 30px;">Pleas enter the sign up OTP to get started</p>
+<h1 style="font-size: 40px; letter-spacing: 2px; text-align:center;">${otp}</h1>
+</div>`;
+  mailService.sendMail(mailmessagHtml, email);
+  return mailmessagHtml;
 };

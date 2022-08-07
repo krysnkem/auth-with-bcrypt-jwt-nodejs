@@ -72,31 +72,35 @@ exports.logOutUser = (req, res) => {
   const splitedString = authHeader.split(" ");
   const token = splitedString[1];
 
-  // decrypt the token
-  jwt.verify(token, SECRET, (err, decodedUserDetails) => {
+  //decode the jwt
+  let decodedUserDetails = jwt.decode(token);
+
+  //extract username or email
+  let userEmail = decodedUserDetails.email;
+
+  //use the email to locate the user
+  UserModel.findOne({ email: userEmail }, (err, foundUser) => {
     if (err) return res.status(500).json({ err });
-    //extract username or email
-    let userEmail = decodedUserDetails.email;
+    //check if the user has already been logged out
+    if (!foundUser.isLoggedIn)
+      return res
+        .status(401)
+        .json({ message: "User has already been logged out" });
 
-    //use the email to locate the user
-    UserModel.findOne({ email: userEmail }, (err, foundUser) => {
+    //set the isLogggedIn record to false
+    foundUser.isLoggedIn = false;
+    foundUser.token = "";
+    foundUser.save((err, savedUser) => {
       if (err) return res.status(500).json({ err });
-      //check if the user has already been logged out
-      if (!foundUser.isLoggedIn)
-        return res
-          .status(401)
-          .json({ message: "User has already been logged out" });
-
-      //set the isLogggedIn record to false
-      foundUser.isLoggedIn = false;
-      foundUser.token = "";
-      foundUser.save((err, savedUser) => {
-        if (err) return res.status(500).json({ err });
-        return res.status(200).json({
-          message: "User logged out",
-          isLoggedIn: foundUser.isLoggedIn,
-        });
+      return res.status(200).json({
+        message: "User logged out",
+        isLoggedIn: foundUser.isLoggedIn,
       });
     });
   });
+
+  // jwt.verify(token, SECRET, (err, decodedUserDetails) => {
+  //   if (err) return res.status(500).json({ err });
+
+  // });
 };
